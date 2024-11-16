@@ -1,209 +1,521 @@
 /**
-	******************************************************************************
-	* @file    main.c
-	* @author  Ac6
-	* @version V1.0
-	* @date    01-December-2013
-	* @brief   Default main function.
-	******************************************************************************
+  ******************************************************************************
+  * @file    main.c
+  * @author  Weili An, Niraj Menon
+  * @date    Feb 3, 2024
+  * @brief   ECE 362 Lab 6 Student template
+  ******************************************************************************
 */
+
+/*******************************************************************************/
+
+// Fill out your username, otherwise your completion code will have the 
+// wrong username!
+const char* username = "seaman7";
+
+/*******************************************************************************/ 
 
 #include "stm32f0xx.h"
 
-void check_wiring(void);
-void grader(void);
+void set_char_msg(int, char);
+void nano_wait(unsigned int);
+void game(void);
+void internal_clock();
+void check_wiring();
+void autotest();
 
-// nano wait function is already defined in either hwready or grader
-void nano_wait(unsigned int n) {
-		asm(    "        mov r0,%0\n"
-						"repeat: sub r0,#83\n"
-						"        bgt repeat\n" : : "r"(n) : "r0", "cc");
+//===========================================================================
+// Configure GPIOC
+//===========================================================================
+void enable_ports(void) {
+    // Only enable port C for the keypad
+    RCC->AHBENR |= RCC_AHBENR_GPIOCEN;
+    GPIOC->MODER &= ~0xffff;
+    GPIOC->MODER |= 0x55 << (4*2);
+    GPIOC->OTYPER &= ~0xff;
+    GPIOC->OTYPER |= 0xf0;
+    GPIOC->PUPDR &= ~0xff;
+    GPIOC->PUPDR |= 0x55;
 }
 
-/*******************************************************
- *
- * Only type below this section.
- *
-*******************************************************/
 
-// STEP 1
-// Implement init_tim1.
-void init_tim1() {
-	// Enable GPIOA clock
-	RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+uint8_t col; // the column being scanned
 
-	// Set PA8, PA9, PA10 to alternate function mode (AF2)
-	GPIOA->MODER &= ~(GPIO_MODER_MODER8 | GPIO_MODER_MODER9 | GPIO_MODER_MODER10);
-	GPIOA->MODER |= GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1 | GPIO_MODER_MODER10_1;
-	GPIOA->AFR[1] &= ~(0x00000FFF);
-	GPIOA->AFR[1] |= 0x00000222;
+void drive_column(int);   // energize one of the column outputs
+int  read_rows();         // read the four row inputs
+void update_history(int col, int rows); // record the buttons of the driven column
+char get_key_event(void); // wait for a button event (press or release)
+char get_keypress(void);  // wait for only a button press event.
+float getfloat(void);     // read a floating-point number from keypad
+void show_keys(void);     // demonstrate get_key_event()
 
-	// Enable TIM1 clock
-	RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
+//===========================================================================
+// Bit Bang SPI LED Array
+//===========================================================================
+int msg_index = 0;
+uint16_t msg[8] = { 0x0000,0x0100,0x0200,0x0300,0x0400,0x0500,0x0600,0x0700 };
+extern const char font[];
 
-	// Set TIM1 to upcounting mode
-	TIM1->CR1 &= ~TIM_CR1_DIR;
+//===========================================================================
+// Configure PB12 (CS), PB13 (SCK), and PB15 (SDI) for outputs
+//===========================================================================
+void setup_bb(void) 
+{   
+    // Enable the GPIOB peripheral
+    RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
 
-	// Set prescaler to 47 (PSC = 47)
-	TIM1->PSC = 47;
+    // Set the mode to output for PB12, PB13, and PB15
+    GPIOB->MODER &= ~((3 << (12 * 2)) | (3 << (13 * 2)) | (3 << (15 * 2))); // Clear mode bits
+    GPIOB->MODER |= (1 << (12 * 2)) | (1 << (13 * 2)) | (1 << (15 * 2));    // Set mode to output (01)
 
-	// Set auto-reload register to 999 (ARR = 999)
-	TIM1->ARR = 999;
+    // Set the output type to push-pull for PB12, PB13, and PB15
+    GPIOB->OTYPER &= ~((1 << 12) | (1 << 13) | (1 << 15));
 
-	// Configure TIM1 channels for PWM mode 1
-	TIM1->CCMR1 &= ~(TIM_CCMR1_OC1M | TIM_CCMR1_OC2M);
-	TIM1->CCMR1 |= TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2;
-	TIM1->CCMR2 &= ~TIM_CCMR2_OC3M;
-	TIM1->CCMR2 |= TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2;
-
-	// Enable output for TIM1 channels
-	TIM1->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E;
-
-	// Enable main output
-	TIM1->BDTR |= TIM_BDTR_MOE;
-
-	// Initialize CCR registers
-	TIM1->CCR1 = 999;
-	TIM1->CCR2 = 999;
-	TIM1->CCR3 = 0;
-
-	// Enable TIM1 counter
-	TIM1->CR1 |= TIM_CR1_CEN;
+    // Initialize the pins: CS high, SCK low
+    GPIOB->BSRR = (1 << 12);  // Set PB12 (CS) high
+    GPIOB->BRR = (1 << 13);   // Reset PB13 (SCK) low
 }
 
-// STEP 2
-// Implement init_exti.
-void init_exti() {
-	// Enable clocks for GPIOA, GPIOB, and SYSCFG
-	RCC->AHBENR |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
-	RCC->APB2ENR |= RCC_APB2ENR_SYSCFGEN;
-
-
-	// // Configure PA0 as input with pull-down resistor
-	GPIOA->MODER &= ~GPIO_MODER_MODER0; // Input mode
-	GPIOA->PUPDR &= ~GPIO_PUPDR_PUPDR0;
-	GPIOA->PUPDR |= GPIO_PUPDR_PUPDR0_1; // Pull-down
-
-	// Configure PB2 as input with pull-down resistor
-	GPIOB->MODER &= ~GPIO_MODER_MODER2; // Input mode
-	GPIOB->PUPDR &= ~GPIO_PUPDR_PUPDR2;
-	GPIOB->PUPDR |= GPIO_PUPDR_PUPDR2_1; // Pull-down
-
-	// Connect PA0 to EXTI0
-	SYSCFG->EXTICR[0] &= ~SYSCFG_EXTICR1_EXTI0;
-	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI0_PA;
-
-	// Connect PB2 to EXTI2
-	SYSCFG->EXTICR[0] &= ~SYSCFG_EXTICR1_EXTI2;
-	SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI2_PB;
-
-	// Set EXTI0 to rising edge trigger
-	EXTI->RTSR |= EXTI_RTSR_TR0;
-
-	// Set EXTI2 to rising edge trigger
-	EXTI->RTSR |= EXTI_RTSR_TR2;
-
-	// Enable EXTI0 and EXTI2 interrupts
-	EXTI->IMR |= EXTI_IMR_MR0 | EXTI_IMR_MR2;
-
-	
-
-	// Enable EXTI0 and EXTI2 interrupts in NVIC
-	NVIC_EnableIRQ(EXTI0_1_IRQn);
-	NVIC_EnableIRQ(EXTI2_3_IRQn);
+void small_delay(void) {
+    nano_wait(50000);
 }
 
-uint32_t WAIT_TIME = 1000000;
+//===========================================================================
+// Set the MOSI bit, then set the clock high and low.
+// Pause between doing these steps with small_delay().
+//===========================================================================
+void bb_write_bit(int out) {
+    // Set SDI (PB15) to 0 or 1 based on out
+    if (out) {
+        GPIOB->BSRR = (1 << 15);  // Set PB15 high
+    } else {
+        GPIOB->BRR = (1 << 15);   // Reset PB15 low
+    }
+    small_delay();
 
-// STEP 3
-// Write your exception handler for PA0.
-void EXTI0_1_IRQHandler(void) {
-	EXTI->PR |= EXTI_PR_PR0; // Clear pending interrupt for PA0
-	WAIT_TIME = WAIT_TIME + 50000;
+    // Set SCK (PB13) to 1
+    GPIOB->BSRR = (1 << 13);  // Set PB13 high
+    small_delay();
+
+    // Set SCK (PB13) to 0
+    GPIOB->BRR = (1 << 13);   // Reset PB13 low
 }
 
-// STEP 4
-// Write your exception handler for PB2.
-void EXTI2_3_IRQHandler(void) {
-	EXTI->PR |= EXTI_PR_PR2; // Clear pending interrupt for PB2
-	// If WAIT_TIME is greater than 50000, decrement it by 50000
-	WAIT_TIME = (WAIT_TIME > 50000) ? WAIT_TIME - 50000 : WAIT_TIME;
+//===========================================================================
+// Set CS (PB12) low,
+// write 16 bits using bb_write_bit,
+// then set CS high.
+//===========================================================================
+void bb_write_halfword(int message) {
+    // Set CS (PB12) low
+    GPIOB->BRR = (1 << 12);
+
+    // Write each bit from bit 15 to bit 0
+    for (int i = 15; i >= 0; i--) {
+        bb_write_bit((message >> i) & 1);
+    }
+
+    // Set CS (PB12) high
+    GPIOB->BSRR = (1 << 12);
+}
+
+//===========================================================================
+// Continually bitbang the msg[] array.
+//===========================================================================
+void drive_bb(void) {
+    for(;;)
+        for(int d=0; d<8; d++) {
+            bb_write_halfword(msg[d]);
+            nano_wait(1000000); // wait 1 ms between digits
+        }
+}
+
+//============================================================================
+// Configure Timer 15 for an update rate of 1 kHz.
+// Trigger the DMA channel on each update.
+// Copy this from lab 4 or lab 5.
+//============================================================================
+void init_tim15(void) {
+
+    //enable the clock to timer 15
+    RCC->APB2ENR |= RCC_APB2ENR_TIM15EN;
+
+    //trigger dma reuest at rate of 1 kHz
+    TIM15->DIER |= TIM_DIER_UDE;
+
+    TIM15->PSC = 479; // 48MHz / 480 = 100kHz
+    TIM15->ARR = 99; // 100kHz / 100 = 1kHz
+    //no need to enable the interrupt in the NVIC->ISER
+    //enable the timer
+    TIM15->CR1 |= TIM_CR1_CEN;
+
+
 
 }
 
-//code so i can toggle gpioc pin 14 on and off to control a heating element
 
-void init_gpio(void) {
-	// Enable GPIOC clock
-	RCC->AHBENR |= RCC_AHBENR_GPIOCEN;
+//===========================================================================
+// Configure timer 7 to invoke the update interrupt at 1kHz
+// Copy from lab 4 or 5.
+//===========================================================================
 
-	// Set PC13 to output mode
-	GPIOC->MODER &= ~GPIO_MODER_MODER13;
-	GPIOC->MODER |= GPIO_MODER_MODER13_0;
+void init_tim7(void) {
+
+    //enable the clock to timer 7
+    RCC->APB1ENR |= RCC_APB1ENR_TIM7EN;
+
+    //get  48MHz down to 1kHz with a combo of PSC and ARR
+    TIM7->PSC = 479; // 48MHz / 480 = 100kHz
+    TIM7->ARR = 99; // 100kHz / 100 = 1kHz
+
+    //enable the update interrupt
+    TIM7->DIER |= TIM_DIER_UIE;
+
+    //enable the interrupt in the NVIC->ISER
+    NVIC->ISER[0] = 1 << TIM7_IRQn;
+
+    //start the timer
+    TIM7->CR1 |= TIM_CR1_CEN;
+
 }
 
-// Function to toggle GPIOC pin 13 on and off
-void toggle_gpio(void) {
-	// Toggle PC13
-	GPIOC->ODR ^= GPIO_ODR_13;
+
+
+//===========================================================================
+// Copy the Timer 7 ISR from lab 5
+//===========================================================================
+// TODO To be copied
+
+void TIM7_IRQHandler() {
+    //check the rows and columns and update the history of each key for debouncing
+
+    //clear the update interrupt flag (acknowledge the interrupt)
+    TIM7->SR &= ~TIM_SR_UIF;
+
+    //read the row values
+    int rows = read_rows();
+    update_history(col, rows);
+    col = (col + 1) & 3;
+    drive_column(col);
 }
 
+
+//===========================================================================
+// Initialize the SPI2 peripheral.
+//===========================================================================
+void init_spi2(void) {
+    // Enable the GPIOB peripheral pis
+    RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
+    // Set the mode to alternate function for PB12, PB13, and PB15
+    GPIOB->MODER &= ~((3 << (12 * 2)) | (3 << (13 * 2)) | (3 << (15 * 2))); // Clear mode bits
+
+    // Set the mode to alternate function for PB12, PB13, and PB15
+    GPIOB->MODER |= (2 << (12 * 2)) | (2 << (13 * 2)) | (2 << (15 * 2));    // Set mode to alternate function (10)
+
+    // Set the alternate function to AF0 for PB12, PB13, and PB15
+    GPIOB->AFR[1] &= ~((0xF << (4 * 4)) | (0xF << (5 * 4)) | (0xF << (7 * 4))); // Clear alternate function bits
+
+    // Set the alternate function to AF0 for PB12, PB13, and PB15
+    GPIOB->AFR[1] |= (0 << (4 * 4)) | (0 << (5 * 4)) | (0 << (7 * 4)); // Set alternate function to AF0
+
+    //emable the SPI2 peripheral
+    RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
+    // Ensure that the CR1_SPE bit is clear first
+    SPI2->CR1 &= ~SPI_CR1_SPE;
+
+    // Set the baud rate as low as possible (maximum divisor for BR)
+    SPI2->CR1 |= SPI_CR1_BR; 
+
+    // Configure the interface for a 16-bit word size
+    SPI2->CR2 = (SPI2->CR2 & ~SPI_CR2_DS) | (0xF << SPI_CR2_DS_Pos);
+
+    // Configure the SPI channel to be in "master configuration"
+    SPI2->CR1 |= SPI_CR1_MSTR;
+
+    // Set the SS Output enable bit and enable NSSP
+    SPI2->CR2 |= SPI_CR2_SSOE | SPI_CR2_NSSP;
+
+    // Set the TXDMAEN bit to enable DMA transfers on transmit buffer empty
+    SPI2->CR2 |= SPI_CR2_TXDMAEN;
+
+    // Enable the SPI channel
+    SPI2->CR1 |= SPI_CR1_SPE;
+}
+
+//===========================================================================
+// Configure the SPI2 peripheral to trigger the DMA channel when the
+// transmitter is empty.  Use the code from setup_dma from lab 5.
+//===========================================================================
+void spi2_setup_dma(void) {
+
+    // Circular DMA transfer
+    // Enable RCC clock to DMA
+    RCC->AHBENR |= RCC_AHBENR_DMA1EN;
+    // Turn off enable bit for channel first (used with TIM15)
+    DMA1_Channel5->CCR &= ~DMA_CCR_EN;
+
+    // Set CMAR to address of msg
+    DMA1_Channel5->CMAR = (uint32_t)msg;
+
+    // Set CPAR to address of SPI2->DR
+    DMA1_Channel5->CPAR = (uint32_t)&(SPI2->DR);
+
+    // Set CNDTR to 8 (the number of 16-bit transfers)
+    DMA1_Channel5->CNDTR = 8;
+
+    // Set DIR for copying from memory to peripheral
+    DMA1_Channel5->CCR |= DMA_CCR_DIR;
+
+    // Set MINC to increment memory address for each transfer
+    DMA1_Channel5->CCR |= DMA_CCR_MINC;
+
+    // Set MSIZE to 16 bits
+    DMA1_Channel5->CCR &= ~DMA_CCR_MSIZE;
+    DMA1_Channel5->CCR |= DMA_CCR_MSIZE_0;
+
+    // Set PSIZE to 16 bits
+    DMA1_Channel5->CCR &= ~DMA_CCR_PSIZE;
+    DMA1_Channel5->CCR |= DMA_CCR_PSIZE_0; 
+
+    // Set channel to circular mode
+    DMA1_Channel5->CCR |= DMA_CCR_CIRC;
+
+    // Enable the SPI2 bit that generates a DMA request whenever the TXE flag is set
+    SPI2->CR2 |= SPI_CR2_TXDMAEN;
+    
+}
+
+//===========================================================================
+// Enable the DMA channel.
+//===========================================================================
+void spi2_enable_dma(void) {
+    DMA1_Channel5->CCR |= DMA_CCR_EN;
+}
+
+//===========================================================================
+// 4.4 SPI OLED Display
+//===========================================================================
+void init_spi1() {
+    // Enable the GPIOA peripheral
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+
+    // Set the mode to alternate function for PA15, PA5, and PA7
+    GPIOA->MODER &= ~((3 << (15 * 2)) | (3 << (5 * 2)) | (3 << (7 * 2))); // Clear mode bits
+    GPIOA->MODER |= (2 << (15 * 2)) | (2 << (5 * 2)) | (2 << (7 * 2));    // Set mode to alternate function (10)
+
+    // Set the alternate function to AF0 for PA15, PA5, and PA7
+    GPIOA->AFR[1] &= ~((0xF << (15 - 8) * 4)); // Clear alternate function bits for PA15
+    GPIOA->AFR[0] &= ~((0xF << (5 * 4)) | (0xF << (7 * 4))); // Clear alternate function bits for PA5 and PA7
+    // GPIOA->AFR[1] |= (0 << (15 - 8) * 4); // Set alternate function to AF0 for PA15
+    // GPIOA->AFR[0] |= (0 << (5 * 4)) | (0 << (7 * 4)); // Set alternate function to AF0 for PA5 and PA7
+
+    // Enable the SPI1 peripheral
+    RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
+    // Ensure that the CR1_SPE bit is clear first
+    SPI1->CR1 &= ~SPI_CR1_SPE;
+
+    // Set the baud rate as low as possible (maximum divisor for BR)
+    SPI1->CR1 |= SPI_CR1_BR | SPI_CR1_MSTR;
+
+    // SPI1->CR1 |= SPI_CR1_BIDIMODE | SPI_CR1_BIDIOE;
+
+    // Configure the interface for a 10-bit word size
+    // DS[3:0] = 1001
+
+    //cofigure the nSS for pa15
+
+
+    SPI1->CR2 = SPI_CR2_SSOE | SPI_CR2_NSSP | SPI_CR2_DS_3 | SPI_CR2_DS_0;
+
+    SPI1->CR2 |= SPI_CR2_TXDMAEN;
+
+    // Enable the SPI channel
+    SPI1->CR1 |= SPI_CR1_SPE;
+}
+void spi_cmd(unsigned int data) {
+    //until SPI1 is empty
+    while((SPI1->SR & SPI_SR_TXE) == 0);
+
+    //set the data to the data register
+    SPI1->DR = data;
+}
+void spi_data(unsigned int data) {
+    //call spi_cmd with the data or 0x200 | data
+
+    spi_cmd(0x200 | data);
+
+}
+void spi1_init_oled() {
+    //wait 1ms with nano_wait
+    nano_wait(1000000);
+
+    spi_cmd(0x38); //function set
+    spi_cmd(0x08); //display off
+    spi_cmd(0x01); //clear display
+
+    nano_wait(2000000); //wait 1ms
+
+    spi_cmd(0x06); //entry mode set
+    spi_cmd(0x02); //return home    
+    spi_cmd(0x0c); //display on
+}
+void spi1_display1(const char *string) {
+    //move the cursor to home position
+
+    spi_cmd(0x02);
+
+    // Loop through the string until you reach a null character
+    for(int i = 0; i < 16 && string[i] != '\0'; i++) {
+        // Send the character to the display
+        spi_data(string[i]);
+    }
+}
+void spi1_display2(const char *string) {
+      //move the cursor to home position
+
+    spi_cmd(0xc0);
+
+    // Loop through the string until you reach a null character
+    for(int i = 0; i < 16 && string[i] != '\0'; i++) {
+        // Send the character to the display
+        spi_data(string[i]);
+    }
+}
+
+//===========================================================================
+// This is the 34-entry buffer to be copied into SPI1.
+// Each element is a 16-bit value that is either character data or a command.
+// Element 0 is the command to set the cursor to the first position of line 1.
+// The next 16 elements are 16 characters.
+// Element 17 is the command to set the cursor to the first position of line 2.
+//===========================================================================
+uint16_t display[34] = {
+        0x002, // Command to set the cursor at the first position line 1
+        0x200+'E', 0x200+'C', 0x200+'E', 0x200+'3', 0x200+'6', + 0x200+'2', 0x200+' ', 0x200+'i',
+        0x200+'s', 0x200+' ', 0x200+'t', 0x200+'h', + 0x200+'e', 0x200+' ', 0x200+' ', 0x200+' ',
+        0x0c0, // Command to set the cursor at the first position line 2
+        0x200+'c', 0x200+'l', 0x200+'a', 0x200+'s', 0x200+'s', + 0x200+' ', 0x200+'f', 0x200+'o',
+        0x200+'r', 0x200+' ', 0x200+'y', 0x200+'o', + 0x200+'u', 0x200+'!', 0x200+' ', 0x200+' ',
+};
+
+//===========================================================================
+// Configure the proper DMA channel to be triggered by SPI1_TX.
+// Set the SPI1 peripheral to trigger a DMA when the transmitter is empty.
+//===========================================================================
+void spi1_setup_dma(void) {
+    // Circular DMA transfer
+    // Enable RCC clock to DMA
+    RCC->AHBENR |= RCC_AHBENR_DMA1EN;
+    // Turn off enable bit for channel first
+    DMA1_Channel3->CCR &= ~DMA_CCR_EN;
+
+    // Set CMAR to address of display
+    DMA1_Channel3->CMAR = (uint32_t)display;
+
+    // Set CPAR to address of SPI1->DR
+    DMA1_Channel3->CPAR = (uint32_t)&(SPI1->DR);
+
+    // Set CNDTR to 34 (the number of 16-bit transfers)
+    DMA1_Channel3->CNDTR = 34;
+
+    // Set DIR for copying from memory to peripheral
+    DMA1_Channel3->CCR |= DMA_CCR_DIR;
+
+    // Set MINC to increment memory address for each transfer
+    DMA1_Channel3->CCR |= DMA_CCR_MINC;
+
+    // Set MSIZE to 16 bits
+    DMA1_Channel3->CCR &= ~DMA_CCR_MSIZE;
+    DMA1_Channel3->CCR |= DMA_CCR_MSIZE_0;
+
+    // Set PSIZE to 16 bits
+    DMA1_Channel3->CCR &= ~DMA_CCR_PSIZE;
+    DMA1_Channel3->CCR |= DMA_CCR_PSIZE_0; 
+
+    // Set channel to circular mode
+    DMA1_Channel3->CCR |= DMA_CCR_CIRC;
+
+    // Enable the SPI1 bit that generates a DMA request whenever the TXE flag is set
+    SPI1->CR2 |= SPI_CR2_TXDMAEN;
+}
+
+
+//===========================================================================
+// Enable the DMA channel triggered by SPI1_TX.
+//===========================================================================
+
+void spi1_enable_dma(void) {
+    DMA1_Channel3->CCR |= DMA_CCR_EN;
+}
+
+//===========================================================================
+// Main function
+//===========================================================================
 
 int main(void) {
-	init_gpio();
+    internal_clock();
 
-	for(;;) {
-		toggle_gpio(); // Turn on heating element
-		nano_wait(10000000000); // Wait for 30 seconds
-		toggle_gpio(); // Turn off heating element
-		nano_wait(500000000); // Wait for 5 seconds
-	}
+    msg[0] |= font['E'];
+    msg[1] |= font['C'];
+    msg[2] |= font['E'];
+    msg[3] |= font[' '];
+    msg[4] |= font['3'];
+    msg[5] |= font['6'];
+    msg[6] |= font['2'];
+    msg[7] |= font[' '];
 
+    // GPIO enable
+    enable_ports();
+    // setup keyboard
+    init_tim7();
 
+    // LED array Bit Bang
+// #define BIT_BANG
+#if defined(BIT_BANG)
+    setup_bb();
+    drive_bb();
+#endif
+
+    // Direct SPI peripheral to drive LED display
+// #define SPI_LEDS
+#if defined(SPI_LEDS)
+    init_spi2();
+    spi2_setup_dma();
+    spi2_enable_dma();
+    init_tim15();
+    show_keys();
+#endif
+
+    // LED array SPI
+// #define SPI_LEDS_DMA
+#if defined(SPI_LEDS_DMA)
+    init_spi2();
+    spi2_setup_dma();
+    spi2_enable_dma();
+    show_keys();
+#endif
+
+    // SPI OLED direct drive
+// #define SPI_OLED
+#if defined(SPI_OLED)
+    init_spi1();
+    spi1_init_oled();
+    spi1_display1("Hello again,");
+    spi1_display2(username);
+#endif
+
+    // SPI
+// #define SPI_OLED_DMA
+#if defined(SPI_OLED_DMA)
+    init_spi1();
+    spi1_init_oled();
+    spi1_setup_dma();
+    spi1_enable_dma();
+#endif
+
+    // Uncomment when you are ready to generate a code.
+    // autotest();
+
+    // Game on!  The goal is to score 100 points.
+    game();
 }
-
-
-/***********************************************************
- *
- * Only change the check_wiring call below this section.
- *
-***********************************************************/
-
-// int main(void)
-// {
-// 	// comment out after hardware readiness check
-// 		// and make sure hwready.o is included in platformio.ini
-// 				internal_clock();
-// 	// check_wiring();
-
-// 	/////////////////////////////////////////////////////////
-
-// 	init_tim1();
-// 	init_exti();
-// 	// DO NOT MOVE OR CHANGE THE grader FUNCTION CALL.
-// 		// Make sure grader.o REPLACES hwready.o in platformio.ini to use this.
-// 	grader();
-// 	int state = 0;
-// 	uint32_t* r1 = (uint32_t*) &TIM1->CCR3;
-// 	uint32_t* r2 = (uint32_t*) &TIM1->CCR2;
-// 	uint32_t* r3 = (uint32_t*) &TIM1->CCR1;
-// 	int ARR = TIM1->ARR;
-// 		for(;;) {
-// 			if (state == 0) {
-// 				*r1 += 1;
-// 				state = (*r1 == (ARR / 8)) ? 1 : 0;
-// 			}
-// 			else if (state == 1) {
-// 				*r1 = (*r1 >= (ARR-1)) ? ARR : (*r1 + 1);
-// 				*r2 -= 1;
-// 				if (*r2 == 0) {
-// 					uint32_t* tmp = r1;
-// 					r1 = r2;
-// 					r2 = r3;
-// 					r3 = tmp;
-// 					state = 0;
-// 				}
-// 			}
-// 			nano_wait(WAIT_TIME);
-// 		}
-// }
