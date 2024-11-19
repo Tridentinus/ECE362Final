@@ -142,10 +142,10 @@ void configure_pb7(void) {
     GPIOB->OSPEEDR &= ~(3 << (7 * 2));
 
     // Write a 1 to PB7
-    GPIOB->BSRR = (1 << 7);
+    //GPIOB->BSRR = (1 << 7);
     //wreit a 0 to PB7
     // print("oo");
-    // GPIOB->BRR = (1 << 7);
+    GPIOB->BRR = (1 << 7);
 }
 
 //===========================================================================
@@ -202,6 +202,28 @@ uint8_t DHT11_Check_Response (void) {
     //while high
     while(DHT11_PORT->IDR & (1<<7));
     return Response;   
+}
+uint8_t DHT11_Read(void) {
+    uint8_t i, j;
+    uint8_t result = 0;
+    for (j = 0; j < 8; j++) {
+        // Wait for the pin to go high
+        while (!(DHT11_PORT->IDR & (1<<7)));
+        
+        // Wait for 40 us
+        nano_wait(40000);
+        
+        // Check if the pin is low
+        if (!(DHT11_PORT->IDR & (1<<7))) {
+            result &= ~(1 << (7 - j));  // Write 0
+        } else {
+            result |= (1 << (7 - j));   // Write 1
+        }
+        
+        // Wait for the pin to go low
+        while (DHT11_PORT->IDR & (1<<7));
+    }
+    return result;
 }
 
 //============================================================================
@@ -531,6 +553,11 @@ void spi1_enable_dma(void) {
 //===========================================================================
 uint8_t Presence = 0;
 uint8_t Checksum = 0;
+uint8_t Rh_byte1 = 0;
+uint8_t Rh_byte2 = 0;
+uint8_t Temp_byte1 = 0;
+uint8_t Temp_byte2 = 0;
+
 int main(void) {
     internal_clock();
     msg[0] |= font['E'];
@@ -550,7 +577,7 @@ int main(void) {
     init_tim7();
 
 
-    print("hello");
+    // print("hello");
     // LED array Bit Bang
 // #define BIT_BANG
 #if defined(BIT_BANG)
@@ -568,10 +595,39 @@ int main(void) {
     // show_keys();
 #endif
 
-    print("o");
+    // print("o");
     // SPI OLED direct drive
 // char tstr[20] = {0};
     // print("o       ");
+    char tstr[20] = {0};
+
+    while(1) {
+        DHT11_Start();
+        print("1");
+        Presence = DHT11_Check_Response();
+        print("2");
+        if (Presence == 1) {
+            Rh_byte1 = DHT11_Read();
+            print("3");
+            Rh_byte2 = DHT11_Read();
+            print("4");
+            Temp_byte1 = DHT11_Read();
+            print("5");
+            Temp_byte2 = DHT11_Read();
+            print("6");
+            Checksum = DHT11_Read();
+            print("7");
+
+            snprintf(tstr, sizeof(tstr), "%d.%d C", (int)Temp_byte1, (int)Temp_byte2);
+            // print(tstr);
+        } else {
+            print("oooooo");
+        }
+
+        nano_wait(200000000); // Wait for 200ms before reading again
+    }
+
+
     configure_pb7();
 
 
