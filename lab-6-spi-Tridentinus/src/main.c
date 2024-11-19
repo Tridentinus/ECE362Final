@@ -27,7 +27,7 @@ void autotest();
 #define DHT11_PORT GPIOA
 #define DHT11_PIN GPIO_PIN_7
 //===========================================================================
-// extern void print(const char str[]);
+extern void print(const char str[]);
 //===========================================================================
 void enable_ports(void) {
     // Only enable port C for the keypad
@@ -157,6 +157,51 @@ void drive_bb(void) {
             bb_write_halfword(msg[d]);
             nano_wait(1000000); // wait 1 ms between digits
         }
+}
+
+uint8_t DHT11_Start (void) {
+    //turn on GPIOA
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+
+    //set the mode to output for PA7
+    DHT11_PORT->MODER &= ~(3 << (7 * 2));
+    DHT11_PORT->MODER |= (1 << (7 * 2));
+
+    //set the output type to open drain for PA7
+    DHT11_PORT->OTYPER |= (1 << 7);
+
+    //clear pupdr for PA7
+    DHT11_PORT->PUPDR &= ~(3 << (7 * 2));
+
+    //set PA7 low 
+    DHT11_PORT->BRR = (1 << 7);
+
+    //wait 18ms
+    nano_wait(18000000);
+
+    //configure pin as input for PA7
+    DHT11_PORT->MODER &= ~(3 << (7 * 2));
+
+}
+
+uint8_t DHT11_Check_Response (void) {
+    uint8_t Response = 0;
+    nano_wait(40000);
+
+    if (!(DHT11_PORT->IDR & (1 << 7))) {
+        nano_wait(80000);
+        if ((DHT11_PORT->IDR & (1 << 7))) {
+            print("1");
+            Response = 1;
+        }
+        else {
+            print("-1");
+            Response = -1;
+        }
+    }
+    //while high
+    while(DHT11_PORT->IDR & (1<<7));
+    return Response;   
 }
 
 //============================================================================
@@ -503,9 +548,9 @@ int main(void) {
     enable_ports();
     // setup keyboard
     init_tim7();
-    init_tim1();
 
-    // print("hello");
+
+    print("hello");
     // LED array Bit Bang
 // #define BIT_BANG
 #if defined(BIT_BANG)
@@ -523,7 +568,7 @@ int main(void) {
     // show_keys();
 #endif
 
-// print("o");
+    print("o");
     // SPI OLED direct drive
 // char tstr[20] = {0};
     // print("o       ");
