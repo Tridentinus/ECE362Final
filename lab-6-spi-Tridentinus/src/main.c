@@ -11,14 +11,13 @@
 
 // Fill out your username, otherwise your completion code will have the 
 // wrong username!
-const char* username = "seaman7";
+const char* username = "akhondok";
 
 /*******************************************************************************/ 
-#include "stm32f0xx_hal.h"
+
 #include "stm32f0xx.h"
-//include sprintf  
-#include <stdio.h>
-TIM_HandleTypeDef htim1;
+#include <ctype.h>
+
 void set_char_msg(int, char);
 void nano_wait(unsigned int);
 void game(void);
@@ -26,10 +25,8 @@ void internal_clock();
 void check_wiring();
 void autotest();
 
-#define DHT11_PORT GPIOA
-#define DHT11_PIN GPIO_PIN_7
 //===========================================================================
-// extern void print(const char str[]);
+// Configure GPIOC
 //===========================================================================
 void enable_ports(void) {
     // Only enable port C for the keypad
@@ -63,21 +60,16 @@ extern const char font[];
 //===========================================================================
 // Configure PB12 (CS), PB13 (SCK), and PB15 (SDI) for outputs
 //===========================================================================
-void setup_bb(void) 
-{   
-    // Enable the GPIOB peripheral
+void setup_bb(void) {
     RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
+   
+    GPIOB->MODER &= ~(0x00ffffff);
 
-    // Set the mode to output for PB12, PB13, and PB15
-    GPIOB->MODER &= ~((3 << (12 * 2)) | (3 << (13 * 2)) | (3 << (15 * 2))); // Clear mode bits
-    GPIOB->MODER |= (1 << (12 * 2)) | (1 << (13 * 2)) | (1 << (15 * 2));    // Set mode to output (01)
+    GPIOB->MODER |= (0x00000045 << 24);
 
-    // Set the output type to push-pull for PB12, PB13, and PB15
-    GPIOB->OTYPER &= ~((1 << 12) | (1 << 13) | (1 << 15));
-
-    // Initialize the pins: CS high, SCK low
-    GPIOB->BSRR = (1 << 12);  // Set PB12 (CS) high
-    GPIOB->BRR = (1 << 13);   // Reset PB13 (SCK) low
+    GPIOB->BSRR = (1 << (12));
+    GPIOB->BSRR = (1 << (13 + 16));
+    // GPIOB->BSRR = (1 << (15));
 }
 
 void small_delay(void) {
@@ -88,21 +80,23 @@ void small_delay(void) {
 // Set the MOSI bit, then set the clock high and low.
 // Pause between doing these steps with small_delay().
 //===========================================================================
-void bb_write_bit(int out) {
-    // Set SDI (PB15) to 0 or 1 based on out
-    if (out) {
-        GPIOB->BSRR = (1 << 15);  // Set PB15 high
+void bb_write_bit(int val) {
+    // CS (PB12)
+    // SCK (PB13)
+    // SDI (PB15)
+   if (val) {
+        GPIOB->BSRR = (1 << (15));
     } else {
-        GPIOB->BRR = (1 << 15);   // Reset PB15 low
+        GPIOB->BSRR = (1 << (15 + 16));
     }
+
+    small_delay();
+   
+    GPIOB->BSRR = (1 << (13));
+   
     small_delay();
 
-    // Set SCK (PB13) to 1
-    GPIOB->BSRR = (1 << 13);  // Set PB13 high
-    small_delay();
-
-    // Set SCK (PB13) to 0
-    GPIOB->BRR = (1 << 13);   // Reset PB13 low
+    GPIOB->BSRR = (1 << (13 + 16));
 }
 
 //===========================================================================
@@ -110,44 +104,18 @@ void bb_write_bit(int out) {
 // write 16 bits using bb_write_bit,
 // then set CS high.
 //===========================================================================
-void bb_write_halfword(int message) {
-    // Set CS (PB12) low
-    GPIOB->BRR = (1 << 12);
+void bb_write_halfword(int halfword) {
+    GPIOB->BSRR = (1 << (12 + 16));
 
-    // Write each bit from bit 15 to bit 0
     for (int i = 15; i >= 0; i--) {
-        bb_write_bit((message >> i) & 1);
+        if (halfword >> i & 0x00000001) {
+            bb_write_bit(1);
+        } else {
+            bb_write_bit(0);
+        }
     }
 
-    // Set CS (PB12) high
-    GPIOB->BSRR = (1 << 12);
-}
-
-//===========================================================================
-// Configure PB7 to be output, push-pull, no pull-up or pull-down, low speed
-//===========================================================================
-void configure_pb7(void) {
-    // Enable the GPIOB peripheral
-    RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
-
-    // Set the mode to output for PB7
-    GPIOB->MODER &= ~(3 << (7 * 2)); // Clear mode bits
-    GPIOB->MODER |= (1 << (7 * 2));  // Set mode to output (01)
-
-    // Set the output type to push-pull for PB7
-    GPIOB->OTYPER &= ~(1 << 7);
-
-    // Set no pull-up or pull-down for PB7
-    GPIOB->PUPDR &= ~(3 << (7 * 2));
-
-    // Set the output speed to low for PB7
-    GPIOB->OSPEEDR &= ~(3 << (7 * 2));
-
-    // Write a 1 to PB7
-    GPIOB->BSRR = (1 << 7);
-    //wreit a 0 to PB7
-    // print("oo");
-    // GPIOB->BRR = (1 << 7);
+    GPIOB->BSRR = (1 << (12));
 }
 
 //===========================================================================
@@ -167,249 +135,157 @@ void drive_bb(void) {
 // Copy this from lab 4 or lab 5.
 //============================================================================
 void init_tim15(void) {
-
-    //enable the clock to timer 15
     RCC->APB2ENR |= RCC_APB2ENR_TIM15EN;
-
-    //trigger dma reuest at rate of 1 kHz
+    TIM15->PSC = (2400 - 1);
+    TIM15->ARR = (20-1);
     TIM15->DIER |= TIM_DIER_UDE;
-
-    TIM15->PSC = 479; // 48MHz / 480 = 100kHz
-    TIM15->ARR = 99; // 100kHz / 100 = 1kHz
-    //no need to enable the interrupt in the NVIC->ISER
-    //enable the timer
-    TIM15->CR1 |= TIM_CR1_CEN;
-
-
-
+    TIM15->CR1 |= 0x00000001;
 }
-
 
 //===========================================================================
 // Configure timer 7 to invoke the update interrupt at 1kHz
 // Copy from lab 4 or 5.
 //===========================================================================
-
 void init_tim7(void) {
-
-    //enable the clock to timer 7
     RCC->APB1ENR |= RCC_APB1ENR_TIM7EN;
-
-    //get  48MHz down to 1kHz with a combo of PSC and ARR
-    TIM7->PSC = 479; // 48MHz / 480 = 100kHz
-    TIM7->ARR = 99; // 100kHz / 100 = 1kHz
-
-    //enable the update interrupt
+    TIM7->PSC = 48 - 1;
+    TIM7->ARR = 1000 - 1;
     TIM7->DIER |= TIM_DIER_UIE;
-
-    //enable the interrupt in the NVIC->ISER
-    NVIC->ISER[0] = 1 << TIM7_IRQn;
-
-    //start the timer
+    NVIC_EnableIRQ(TIM7_IRQn);
     TIM7->CR1 |= TIM_CR1_CEN;
-
 }
-
-
 
 //===========================================================================
 // Copy the Timer 7 ISR from lab 5
 //===========================================================================
 // TODO To be copied
-
 void TIM7_IRQHandler() {
-    //check the rows and columns and update the history of each key for debouncing
-
-    //clear the update interrupt flag (acknowledge the interrupt)
     TIM7->SR &= ~TIM_SR_UIF;
-
-    //read the row values
-    int rows = read_rows();
+    uint8_t rows = read_rows();
     update_history(col, rows);
     col = (col + 1) & 3;
     drive_column(col);
 }
 
-
 //===========================================================================
 // Initialize the SPI2 peripheral.
 //===========================================================================
 void init_spi2(void) {
-    // Enable the GPIOB peripheral pis
     RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
-    // Set the mode to alternate function for PB12, PB13, and PB15
-    GPIOB->MODER &= ~((3 << (12 * 2)) | (3 << (13 * 2)) | (3 << (15 * 2))); // Clear mode bits
-
-    // Set the mode to alternate function for PB12, PB13, and PB15
-    GPIOB->MODER |= (2 << (12 * 2)) | (2 << (13 * 2)) | (2 << (15 * 2));    // Set mode to alternate function (10)
-
-    // Set the alternate function to AF0 for PB12, PB13, and PB15
-    GPIOB->AFR[1] &= ~((0xF << (4 * 4)) | (0xF << (5 * 4)) | (0xF << (7 * 4))); // Clear alternate function bits
-
-    // Set the alternate function to AF0 for PB12, PB13, and PB15
-    GPIOB->AFR[1] |= (0 << (4 * 4)) | (0 << (5 * 4)) | (0 << (7 * 4)); // Set alternate function to AF0
-
-    //emable the SPI2 peripheral
     RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
-    // Ensure that the CR1_SPE bit is clear first
-    SPI2->CR1 &= ~SPI_CR1_SPE;
 
-    // Set the baud rate as low as possible (maximum divisor for BR)
-    SPI2->CR1 |= SPI_CR1_BR; 
+    GPIOB->MODER &= ~(0xcf000000);
+    GPIOB->MODER |= (0x0000008a << 24);
 
-    // Configure the interface for a 16-bit word size
-    SPI2->CR2 = (SPI2->CR2 & ~SPI_CR2_DS) | (0xF << SPI_CR2_DS_Pos);
+    GPIOB->AFR[0] &= ~(0xf0ff << 16);
 
-    // Configure the SPI channel to be in "master configuration"
-    SPI2->CR1 |= SPI_CR1_MSTR;
+    // SPI2->CR1 &= ~(0x00000040);
+    SPI2->CR1 &= ~(SPI_CR1_SPE);
+   
+    SPI2->CR1 |= (0x00000007 << 3);
+   
+    SPI2->CR2 = (0x0000000f << 8);
 
-    // Set the SS Output enable bit and enable NSSP
-    SPI2->CR2 |= SPI_CR2_SSOE | SPI_CR2_NSSP;
+    SPI2->CR1 |= 0x00000004;
 
-    // Set the TXDMAEN bit to enable DMA transfers on transmit buffer empty
-    SPI2->CR2 |= SPI_CR2_TXDMAEN;
+    SPI2->CR2 |= 0x00000004;
+    SPI2->CR2 |= 0x00000008;
 
-    // Enable the SPI channel
-    SPI2->CR1 |= SPI_CR1_SPE;
+    SPI2->CR2 |= 0x00000002;
+   
+    SPI2->CR1 |= 0x00000040;
 }
 
 //===========================================================================
 // Configure the SPI2 peripheral to trigger the DMA channel when the
 // transmitter is empty.  Use the code from setup_dma from lab 5.
 //===========================================================================
-void spi2_setup_dma(void) {
-
-    // Circular DMA transfer
-    // Enable RCC clock to DMA
+void spi2_setup_dma(void) { 
     RCC->AHBENR |= RCC_AHBENR_DMA1EN;
-    // Turn off enable bit for channel first (used with TIM15)
-    DMA1_Channel5->CCR &= ~DMA_CCR_EN;
-
-    // Set CMAR to address of msg
-    DMA1_Channel5->CMAR = (uint32_t)msg;
-
-    // Set CPAR to address of SPI2->DR
-    DMA1_Channel5->CPAR = (uint32_t)&(SPI2->DR);
-
-    // Set CNDTR to 8 (the number of 16-bit transfers)
+    DMA1_Channel5->CMAR = (uint32_t) &msg;
+    DMA1_Channel5->CPAR = (uint32_t) &SPI2->DR;
     DMA1_Channel5->CNDTR = 8;
-
-    // Set DIR for copying from memory to peripheral
     DMA1_Channel5->CCR |= DMA_CCR_DIR;
-
-    // Set MINC to increment memory address for each transfer
     DMA1_Channel5->CCR |= DMA_CCR_MINC;
+    DMA1_Channel5->CCR |= 0x00000400;
+    DMA1_Channel5->CCR |= 0x00000100;
+    DMA1_Channel5->CCR |= 0x00000020;
+    SPI2->CR2 |= 0x00000002;
 
-    // Set MSIZE to 16 bits
-    DMA1_Channel5->CCR &= ~DMA_CCR_MSIZE;
-    DMA1_Channel5->CCR |= DMA_CCR_MSIZE_0;
-
-    // Set PSIZE to 16 bits
-    DMA1_Channel5->CCR &= ~DMA_CCR_PSIZE;
-    DMA1_Channel5->CCR |= DMA_CCR_PSIZE_0; 
-
-    // Set channel to circular mode
-    DMA1_Channel5->CCR |= DMA_CCR_CIRC;
-
-    // Enable the SPI2 bit that generates a DMA request whenever the TXE flag is set
-    SPI2->CR2 |= SPI_CR2_TXDMAEN;
-    
 }
 
 //===========================================================================
 // Enable the DMA channel.
 //===========================================================================
 void spi2_enable_dma(void) {
-    DMA1_Channel5->CCR |= DMA_CCR_EN;
+    DMA1_Channel5->CCR |= 0x00000001;
 }
 
 //===========================================================================
 // 4.4 SPI OLED Display
 //===========================================================================
 void init_spi1() {
-    // Enable the GPIOA peripheral
     RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
-
-    // Set the mode to alternate function for PA15, PA5, and PA7
-    GPIOA->MODER &= ~((3 << (15 * 2)) | (3 << (5 * 2)) | (3 << (7 * 2))); // Clear mode bits
-    GPIOA->MODER |= (2 << (15 * 2)) | (2 << (5 * 2)) | (2 << (7 * 2));    // Set mode to alternate function (10)
-
-    // Set the alternate function to AF0 for PA15, PA5, and PA7
-    GPIOA->AFR[1] &= ~((0xF << (15 - 8) * 4)); // Clear alternate function bits for PA15
-    GPIOA->AFR[0] &= ~((0xF << (5 * 4)) | (0xF << (7 * 4))); // Clear alternate function bits for PA5 and PA7
-    // GPIOA->AFR[1] |= (0 << (15 - 8) * 4); // Set alternate function to AF0 for PA15
-    // GPIOA->AFR[0] |= (0 << (5 * 4)) | (0 << (7 * 4)); // Set alternate function to AF0 for PA5 and PA7
-
-    // Enable the SPI1 peripheral
     RCC->APB2ENR |= RCC_APB2ENR_SPI1EN;
-    // Ensure that the CR1_SPE bit is clear first
-    SPI1->CR1 &= ~SPI_CR1_SPE;
 
-    // Set the baud rate as low as possible (maximum divisor for BR)
-    SPI1->CR1 |= SPI_CR1_BR | SPI_CR1_MSTR;
+    GPIOA->MODER &= ~(0xc000cc00);
+    GPIOA->MODER |= (0x80008800);
 
-    // SPI1->CR1 |= SPI_CR1_BIDIMODE | SPI_CR1_BIDIOE;
+    GPIOA->AFR[0] &= ~(0x0f0f << 20);
+    GPIOA->AFR[1] &= ~(0x000f << 28);
 
-    // Configure the interface for a 10-bit word size
-    // DS[3:0] = 1001
+    SPI1->CR1 &= ~(0x00000040);
 
-    //cofigure the nSS for pa15
+    SPI1->CR1 |= (0x00000007 << 3);
 
+    SPI1->CR2 &= ~(0x00000006 << 8);
+    SPI1->CR2 = (0x00000009 << 8);
 
-    SPI1->CR2 = SPI_CR2_SSOE | SPI_CR2_NSSP | SPI_CR2_DS_3 | SPI_CR2_DS_0;
+    SPI1->CR1 |= 0x00000004;
 
-    SPI1->CR2 |= SPI_CR2_TXDMAEN;
+    SPI1->CR2 |= 0x00000002;
 
-    // Enable the SPI channel
-    SPI1->CR1 |= SPI_CR1_SPE;
+    SPI1->CR2 |= 0x00000004;
+    SPI1->CR2 |= 0x00000008;
+
+    SPI1->CR1 |= 0x00000040;
 }
 void spi_cmd(unsigned int data) {
-    //until SPI1 is empty
-    while((SPI1->SR & SPI_SR_TXE) == 0);
-
-    //set the data to the data register
+    while(!(SPI1->SR & (1 << 1))) {}
+   
     SPI1->DR = data;
 }
 void spi_data(unsigned int data) {
-    //call spi_cmd with the data or 0x200 | data
-
-    spi_cmd(0x200 | data);
-
+    spi_cmd(data | 0x200);
 }
 void spi1_init_oled() {
-    //wait 1ms with nano_wait
     nano_wait(1000000);
+    spi_cmd(0x38);
+    spi_cmd(0x08);
+    spi_cmd(0x01);
 
-    spi_cmd(0x38); //function set
-    spi_cmd(0x08); //display off
-    spi_cmd(0x01); //clear display
-
-    nano_wait(2000000); //wait 1ms
-
-    spi_cmd(0x06); //entry mode set
-    spi_cmd(0x02); //return home    
-    spi_cmd(0x0c); //display on
+    nano_wait(2000000);
+    spi_cmd(0x06);
+    spi_cmd(0x02);
+    spi_cmd(0x0c);
 }
 void spi1_display1(const char *string) {
-    //move the cursor to home position
-
     spi_cmd(0x02);
 
-    // Loop through the string until you reach a null character
-    for(int i = 0; i < 16 && string[i] != '\0'; i++) {
-        // Send the character to the display
-        spi_data(string[i]);
+    int curr = 0;
+    while (string[curr] != '\0') {
+        spi_data(string[curr]);
+        curr++;
     }
+
 }
 void spi1_display2(const char *string) {
-      //move the cursor to home position
-
     spi_cmd(0xc0);
 
-    // Loop through the string until you reach a null character
-    for(int i = 0; i < 16 && string[i] != '\0'; i++) {
-        // Send the character to the display
-        spi_data(string[i]);
+    int curr = 0;
+    while (string[curr] != '\0') {
+        spi_data(string[curr]);
+        curr++;
     }
 }
 
@@ -429,429 +305,121 @@ uint16_t display[34] = {
         0x200+'r', 0x200+' ', 0x200+'y', 0x200+'o', + 0x200+'u', 0x200+'!', 0x200+' ', 0x200+' ',
 };
 
-
-
-
-
-
-
-void DHT22_GPIO_Init(void) {
-    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
-    //clear PA3
-    GPIOA->MODER &= ~GPIO_MODER_MODER3;
-    //set PA3 to output
-    GPIOA->MODER |= GPIO_MODER_MODER3_0;
-
-}
-
-void DHT22_Start(void) {
-    //set PA3 to output
-    GPIOA->MODER &= ~GPIO_MODER_MODER3_1;
-
-    GPIOA->MODER |= GPIO_MODER_MODER3_0;
-    
-
-    //pull PA3 low
-    // GPIOA->ODR &= ~GPIO_ODR_3;
-    GPIOA->BRR |= GPIO_BRR_BR_3;
-
-
-    //wait wait 1.2 ms
-    nano_wait(5500000);  
-
-    // GPIOA->ODR |= GPIO_ODR_3;
-    GPIOA->BSRR |= GPIO_BSRR_BS_3;
-    while (!(GPIOA->ODR & GPIO_ODR_3));
-
-
-
-    //wait 30 us
-   
-    nano_wait(30000);
-
-    //set PA3 to input
-    GPIOA->MODER &= ~GPIO_MODER_MODER3;
-
-    GPIOA->PUPDR |= 01 << 6;
-    print("Start");
-
-}
-
-
-void delay (uint16_t us)
-{   
-    __HAL_TIM_SET_COUNTER(&htim1, 0);  // set the counter value to 0
-
-	while (__HAL_TIM_GET_COUNTER(&htim1) < us);  // wait for the counter to reach the us input in the parameter
-    // print("dicc");
-
-}
-void DHT11_Start (void)
-{
-	// Set_Pin_Output (DHT11_PORT, DHT11_PIN);  // set the pin as output
-    //set pin as output
-    GPIOA->MODER &= ~GPIO_MODER_MODER7_1;
-    GPIOA->MODER |= GPIO_MODER_MODER7_0;
-
-
-
-
-	HAL_GPIO_WritePin (DHT11_PORT, DHT11_PIN, 0);   // pull the pin low
-	delay (18000);   // wait for 18ms
-    // print("Score");
-
-    // nano_wait(18000000);
-	// Set_Pin_Input(DHT11_PORT, DHT11_PIN);    // set as input
-    //set pin as input
-    GPIOA->MODER &= ~GPIO_MODER_MODER7_0;
-    GPIOA->MODER |= GPIO_MODER_MODER7_1;
-
-    // Enable pull-up resistor for PA7
-    GPIOA->PUPDR &= ~(3 << (7 * 2)); // Clear pull-up/pull-down bits
-    GPIOA->PUPDR |= (1 << (7 * 2));  // Set pull-up resistor
-    // print("Start");
-
-}
-
-uint8_t DHT11_Check_Response (void)
-{
-	uint8_t Response = 0;
-	delay (40);
-    // nano_wait(40000);
-	if (!(HAL_GPIO_ReadPin (DHT11_PORT, DHT11_PIN)))
-	{
-		delay (80);
-        // nano_wait(80000);
-		if ((HAL_GPIO_ReadPin (DHT11_PORT, DHT11_PIN))) Response = 1;
-		else Response = -1;
-	}
-	while ((HAL_GPIO_ReadPin (DHT11_PORT, DHT11_PIN)));   // wait for the pin to go low
-
-	return Response;
-}
-
-void init_tim1(void) {
-    // Enable TIM1 clock
-    __HAL_RCC_TIM1_CLK_ENABLE();
-
-    // Configure TIM1
-    htim1.Instance = TIM1;
-    htim1.Init.Prescaler = 48 -1;
-    htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-    htim1.Init.Period = 0xFFFF - 1;
-    htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-    htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-    if (HAL_TIM_Base_Init(&htim1) != HAL_OK) {
-        // Initialization Error
-        // Error_Handler();
-        print("Score");
-    }
-
-    // Start TIM1
-    if (HAL_TIM_Base_Start(&htim1) != HAL_OK) {
-        // Starting Error
-        print("uuhore");
-    }
-}
-uint8_t DHT22_Check_Response (void)
-{
-    //Set PA3 to input
-    // GPIOA->MODER &= ~GPIO_MODER_MODER3;
-
-    uint8_t response = 0;
-
-    //wait for 40 us
-    // nano_wait(40000);
-    // while (!GPIOA->IDR & GPIO_IDR_3);
-    // while (GPIOA->IDR & GPIO_IDR_3);
-    if (!(GPIOA->IDR & GPIO_IDR_3)) // if the pin is low
-    {
-        // nano_wait(82000);   // wait for 80us
-        print("83");
-        while(!(GPIOA->IDR & GPIO_IDR_3)); 
-        // response = 1;
-    
-
-        if (GPIOA->IDR & GPIO_IDR_3) {
-            print("1");
-            response = 1;
-            
-        }
-        else {
-            print("-1");
-            response = -1;
-        } // if the pin is high
-        
-    }
-    print("90");
-    while(GPIOA->IDR & GPIO_IDR_3);
-    // while (!GPIOA->IDR & GPIO_IDR_3);
-
-    // if (GPIOA->IDR & GPIO_IDR_3) 
-    //     response = 1;  // if the pin is high, response is ok
-    // else 
-    //     response = -1;
- 
-
-
-    // if (!(GPIOA->IDR & GPIO_IDR_3)) // if the pin is low
-    // {
-       
-    // }
-     
-    // wait for the pin to go low
-    // while (GPIOA->IDR & GPIO_IDR_3);
-    char tstr[20] = {0};
-    snprintf(tstr, sizeof(tstr), "%d", response);
-    // print(tstr);
-    return response;
-}
-
-uint8_t DHT22_Read (void)
-{
-    uint8_t i = 0;
-    uint8_t j;
-
-    for (j=0;j<8;j++)
-    {
-        //wait for `the pin to go high
-
-    
-        while (!(GPIOA->IDR & GPIO_IDR_3));
-
-        //wait for 40 us
-        nano_wait(40000);
-
-        if (!(GPIOA->IDR & GPIO_IDR_3)) // if the pin is low
-        {
-            i&= ~(1<<(7-j)); // write 0
-        }
-        else
-        {
-            i|= (1<<(7-j)); // if the pin is high, write 1
-        }
-
-        //wait for the pin to go low
-        while (GPIOA->IDR & GPIO_IDR_3);
-    }
-    return i;
-}
-void Display_Temp(float Temp) {
-    char str[20] = {0};
-    sprintf(str, "TEMP:- %.2f C", Temp);
-
-    // Convert the string to the bitbang message format
-    for (int i = 0; i < 8; i++) {
-        if (str[i] == '\0') {
-            msg[i] = 0x0000;
-        } else {
-            msg[i] = (i << 8) | font[(unsigned char)str[i]];
-        }
-    }
-}
-
-// void Display_Humidity(float Humidity) {
-//     char str[20] = {0};
-//     sprintf(str, "RH:- %.2f %%", Humidity);
-
-//     // Convert the string to the bitbang message format
-//     for (int i = 0; i < 8; i++) {
-//         if (str[i] == '\0') {
-//             msg[i] = 0x0000;
-//         } else {
-//             msg[i] = (i << 8) | font[(unsigned char)str[i]];
-//         }
-//     }
-// }
-
-
 //===========================================================================
 // Configure the proper DMA channel to be triggered by SPI1_TX.
 // Set the SPI1 peripheral to trigger a DMA when the transmitter is empty.
 //===========================================================================
 void spi1_setup_dma(void) {
-    // Circular DMA transfer
-    // Enable RCC clock to DMA
     RCC->AHBENR |= RCC_AHBENR_DMA1EN;
-    // Turn off enable bit for channel first
-    DMA1_Channel3->CCR &= ~DMA_CCR_EN;
-
-    // Set CMAR to address of display
-    DMA1_Channel3->CMAR = (uint32_t)display;
-
-    // Set CPAR to address of SPI1->DR
-    DMA1_Channel3->CPAR = (uint32_t)&(SPI1->DR);
-
-    // Set CNDTR to 34 (the number of 16-bit transfers)
+    DMA1_Channel3->CCR &= ~(0x1);
+    DMA1_Channel3->CMAR = (uint32_t) &display;
+    DMA1_Channel3->CPAR = (uint32_t) &SPI1->DR;
     DMA1_Channel3->CNDTR = 34;
-
-    // Set DIR for copying from memory to peripheral
     DMA1_Channel3->CCR |= DMA_CCR_DIR;
-
-    // Set MINC to increment memory address for each transfer
     DMA1_Channel3->CCR |= DMA_CCR_MINC;
-
-    // Set MSIZE to 16 bits
-    DMA1_Channel3->CCR &= ~DMA_CCR_MSIZE;
-    DMA1_Channel3->CCR |= DMA_CCR_MSIZE_0;
-
-    // Set PSIZE to 16 bits
-    DMA1_Channel3->CCR &= ~DMA_CCR_PSIZE;
-    DMA1_Channel3->CCR |= DMA_CCR_PSIZE_0; 
-
-    // Set channel to circular mode
-    DMA1_Channel3->CCR |= DMA_CCR_CIRC;
-
-    // Enable the SPI1 bit that generates a DMA request whenever the TXE flag is set
-    SPI1->CR2 |= SPI_CR2_TXDMAEN;
+    DMA1_Channel3->CCR |= 0x00000400;
+    DMA1_Channel3->CCR |= 0x00000100;
+    DMA1_Channel3->CCR |= 0x00000020;
 }
-
 
 //===========================================================================
 // Enable the DMA channel triggered by SPI1_TX.
 //===========================================================================
-
 void spi1_enable_dma(void) {
-    DMA1_Channel3->CCR |= DMA_CCR_EN;
+    DMA1_Channel3->CCR |= 0x00000001;
+}
+
+// Helper function to clear OLED screen
+void clear_oled(void) {
+    spi1_display1("                "); // Clear line 1
+    spi1_display2("                "); // Clear line 2
+}
+
+// Helper function to prompt for temperature
+void prompt_temperature(void) {
+    clear_oled();
+    spi1_display1("Enter Temp:");
+    spi1_display2("(+/- 3 deg F)");
+}
+
+// Helper function to display invalid input message
+void display_invalid_input(void) {
+    clear_oled();
+    spi1_display1("Invalid Input!");
+    nano_wait(1500000000); // Wait 2 seconds
+}
+
+// Helper function to dynamically display current input on OLED
+// Modified helper function to dynamically display current input on OLED
+void display_user_input(int temp, int is_negative) {
+    char buffer[16];
+    snprintf(buffer, 16, "%s%d", is_negative ? "-" : "", temp);
+    spi1_display1("                "); // Clear the first line
+    spi1_display2(buffer);              // Display the input on the second line
+}
+
+// Modified function to read and display user input live
+int read_numeric_input(void) {
+    char key;
+    int temp = 0;
+    int is_negative = 0;
+    int is_first_key = 1; // Track if this is the first keypress
+
+    while (1) {
+        key = get_keypress(); // Wait for a key press event
+
+        if (is_first_key) {
+            clear_oled();     // Clear the entire display when typing starts
+            is_first_key = 0; // Ensure this happens only once
+        }
+
+        if (key == '#') { // '#' for submit
+            return is_negative ? -temp : temp;
+        } else if (key == '*') { // '*' for reset input
+            temp = 0;
+            is_negative = 0;
+            is_first_key = 1; // Reset to show the prompt again
+            prompt_temperature();
+        } else if (key == '-' && temp == 0) { // Negative sign only allowed at the start
+            is_negative = 1;
+        } else if (isdigit(key)) { // Check if key is a digit
+            temp = temp * 10 + (key - '0'); // Update numeric value
+        } else { // Invalid input
+            return -9999; // Special code for invalid input
+        }
+
+        // Update OLED display with the current input
+        display_user_input(temp, is_negative);
+    }
 }
 
 //===========================================================================
 // Main function
 //===========================================================================
-uint8_t Presence = 0;
-uint8_t Checksum = 0;
 int main(void) {
     internal_clock();
-    msg[0] |= font['E'];
-    msg[1] |= font['C'];
-    msg[2] |= font['E'];
-    msg[3] |= font[' '];
-    msg[4] |= font['3'];
-    msg[5] |= font['6'];
-    msg[6] |= font['2'];
-    msg[7] |= font[' '];
+    enable_ports(); // GPIO enable for keypad
+    init_tim7();    // Timer for keypad scanning
 
-    // print("score, 100\n");
-   
-    // GPIO enable
-    enable_ports();
-    // setup keyboard
-    init_tim7();
-    init_tim1();
+    init_spi1();      // SPI initialization for OLED
+    spi1_init_oled(); // Initialize OLED
 
-    // print("hello");
-    // LED array Bit Bang
-// #define BIT_BANG
-#if defined(BIT_BANG)
-    setup_bb();
-    drive_bb();
-#endif
+    while (1) {
+        prompt_temperature(); // Prompt user for input
 
-    // Direct SPI peripheral to drive LED display
-#define SPI_LEDS
-#if defined(SPI_LEDS)
-    init_spi2();
-    spi2_setup_dma();
-    spi2_enable_dma();
-    init_tim15();
-    // show_keys();
-#endif
+        int temp = read_numeric_input();
 
-// print("o");
-    // SPI OLED direct drive
-// char tstr[20] = {0};
-    // print("o       ");
-    configure_pb7();
-    HAL_TIM_Base_Start(&htim1);
-
-    
-    DHT11_Start();
-    uint64_t count = 0;
-
-    while( count < 40) {
-        count++;
-        char tstr[20] = {0};
-        snprintf(tstr, sizeof(tstr), "%d", count);
-        print(tstr);
-        delay(1000);
-        // HAL_Delay(1);
+        if (temp == -9999) { // Check for invalid input
+            display_invalid_input();
+        } else {
+            // Display the entered temperature
+            clear_oled();
+            char buffer[16];
+            print(buffer, 16, "Set Temp: %d C", temp);
+            spi1_display1(buffer);
+            nano_wait(3000000000); // Wait 3 seconds before re-prompting
+        }
     }
 
-
-    Presence = DHT11_Check_Response();
-    char tstr[20] = {0};
-    snprintf(tstr, sizeof(tstr), "%d", Presence);
-    print(tstr);
-
-// while (1) {
-//     // print("woah");
-//     Presence = DHT22_Check_Response();
-//     uint8_t RH_byte1 = DHT22_Read();
-//     uint8_t RH_byte2 = DHT22_Read();
-//     uint8_t Temp_byte1 = DHT22_Read();
-//     uint8_t Temp_byte2 = DHT22_Read();
-//     Checksum = DHT22_Read();
-
-
-//     float Temperature = ((Temp_byte1 << 8) | Temp_byte2) / 10.0;
-//     // float Humidity = ((RH_byte1 << 8) | RH_byte2) / 10.0;
-
-//     nano_wait(2000000);
-//     // snprintf(tstr, sizeof(tstr), "temp %.2f", Temperature);
-//     printfloat(Temperature);
-//     // Display_Temp(Temperature);
-//     // Display_Humidity(Humidity);
-//     // for (int i = 0; i < 8; i++) {
-//     // FILE *out = fopen("out.txt", "a");
-//     // if (out != NULL) {
-//     //     fprintf(out, "msg[%d] = 0x%04X\n", i, msg[i]);
-//     //     fclose(out);
-//     // }
-//     // }   
-//     // drive_bb();
-
-
-
-// }
-
-    // LED array SPI
-// #define SPI_LEDS_DMA
-#if defined(SPI_LEDS_DMA)
-    init_spi2();
-    spi2_setup_dma();
-    spi2_enable_dma();
-    show_keys();
-#endif
-
-    // SPI OLED direct drive
-// #define SPI_OLED
-#if defined(SPI_OLED)
-    init_spi1();
-    spi1_init_oled();
-    spi1_display1("Hello again,");
-    spi1_display2(username);
-#endif
-
-    // SPI
-// #define SPI_OLED_DMA
-#if defined(SPI_OLED_DMA)
-    init_spi1();
-    spi1_init_oled();
-    spi1_setup_dma();
-    spi1_enable_dma();
-#endif
-    // __HAL_TIM_SET_COUNTER(&htim1, 0);  // Reset counter
-    // while (1) {
-    //     uint16_t cnt = __HAL_TIM_GET_COUNTER(&htim1);
-    //     char tstr[20] = {0};
-    //     snprintf(tstr, sizeof(tstr), "%d", cnt);
-    //     print(tstr);
-    //     nano_wait(1000000000);  // Wait for 1 ms
-    // }
-
-    // Uncomment when you are ready to generate a code.
-    // autotest();
-
-    // Game on!  The goal is to score 100 points.
-    // game();
+    return 0;
 }
