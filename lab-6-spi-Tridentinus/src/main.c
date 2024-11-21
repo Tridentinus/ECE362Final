@@ -12,7 +12,6 @@
 // Fill out your username, otherwise your completion code will have the 
 // wrong username!
 const char* username = "seaman7";
-
 /*******************************************************************************/ 
 #include "stm32f0xx.h"
 //include sprintf  
@@ -164,23 +163,23 @@ uint8_t DHT11_Start (void) {
     RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
 
     //set the mode to output for PA7
-    DHT11_PORT->MODER &= ~(3 << (7 * 2));
-    DHT11_PORT->MODER |= (1 << (7 * 2));
+    DHT11_PORT->MODER &= ~(3 << (6 * 2));
+    DHT11_PORT->MODER |= (1 << (6 * 2));
 
     //set the output type to open drain for PA7
-    DHT11_PORT->OTYPER |= (1 << 7);
+    DHT11_PORT->OTYPER |= (1 << 6);
 
     //clear pupdr for PA7
-    DHT11_PORT->PUPDR &= ~(3 << (7 * 2));
+    DHT11_PORT->PUPDR &= ~(3 << (6 * 2));
 
     //set PA7 low 
-    DHT11_PORT->BRR = (1 << 7);
+    DHT11_PORT->BRR = (1 << 6);
 
     //wait 18ms
     nano_wait(18000000);
 
     //configure pin as input for PA7
-    DHT11_PORT->MODER &= ~(3 << (7 * 2));
+    DHT11_PORT->MODER &= ~(3 << (6 * 2));
 
 }
 
@@ -188,9 +187,9 @@ uint8_t DHT11_Check_Response (void) {
     uint8_t Response = 0;
     nano_wait(40000);
 
-    if (!(DHT11_PORT->IDR & (1 << 7))) {
+    if (!(DHT11_PORT->IDR & (1 << 6))) {
         nano_wait(80000);
-        if ((DHT11_PORT->IDR & (1 << 7))) {
+        if ((DHT11_PORT->IDR & (1 << 6))) {
             print("1");
             Response = 1;
         }
@@ -200,7 +199,7 @@ uint8_t DHT11_Check_Response (void) {
         }
     }
     //while high
-    while(DHT11_PORT->IDR & (1<<7));
+    while(DHT11_PORT->IDR & (1<<6));
     return Response;   
 }
 uint8_t DHT11_Read(void) {
@@ -208,20 +207,20 @@ uint8_t DHT11_Read(void) {
     uint8_t result = 0;
     for (j = 0; j < 8; j++) {
         // Wait for the pin to go high
-        while (!(DHT11_PORT->IDR & (1<<7)));
+        while (!(DHT11_PORT->IDR & (1<<6)));
         
         // Wait for 40 us
         nano_wait(40000);
         
         // Check if the pin is low
-        if (!(DHT11_PORT->IDR & (1<<7))) {
+        if (!(DHT11_PORT->IDR & (1<<6))) {
             result &= ~(1 << (7 - j));  // Write 0
         } else {
             result |= (1 << (7 - j));   // Write 1
         }
         
         // Wait for the pin to go low
-        while (DHT11_PORT->IDR & (1<<7));
+        while (DHT11_PORT->IDR & (1<<6));
     }
     return result;
 }
@@ -548,6 +547,93 @@ void spi1_enable_dma(void) {
     DMA1_Channel3->CCR |= DMA_CCR_EN;
 }
 
+// Global variables to store the latest readings
+volatile struct {
+    uint8_t temp_byte1;
+    uint8_t temp_byte2;
+    uint8_t rh_byte1;
+    uint8_t rh_byte2;
+    uint8_t valid;      // Flag to indicate if the reading is valid
+    uint8_t state;      // State machine for DHT11 reading
+    uint32_t timestamp; // To track when the last reading was taken
+} dht11_data = {0};
+
+// Initialize Timer 6 for DHT11 reading
+volatile uint8_t timer_counter = 0;
+
+// Initialize Timer 6 for DHT11 reading
+void init_tim6(void) {
+    // Enable the clock to timer 6
+    RCC->APB1ENR |= RCC_APB1ENR_TIM6EN;
+
+    // Set for 2Hz (reading every 0.5 seconds)
+    // 48MHz / 24000 = 2000Hz
+    TIM6->PSC = 23999;   
+    // 2000Hz / 1000 = 2Hz
+    TIM6->ARR = 999;    
+
+    // Enable the update interrupt
+    TIM6->DIER |= TIM_DIER_UIE;
+
+    // Enable the interrupt in NVIC
+    NVIC->ISER[0] = 1 << TIM6_DAC_IRQn;
+
+    // Start the timer
+    TIM6->CR1 |= TIM_CR1_CEN;
+}
+
+// Timer 6 Interrupt Handler
+void TIM6_DAC_IRQHandler(void) {
+    // Clear the update interrupt flag
+    TIM6->SR &= ~TIM_SR_UIF;
+
+    // Increment counter
+    timer_counter++;
+    
+    // Only read every 4 ticks (2 seconds since we're at 2Hz)
+    if (timer_counter >= 4) {
+        timer_counter = 0;  // Reset counter
+
+        // Start the reading sequence
+        DHT11_Start();
+        uint8_t presence = DHT11_Check_Response();
+        
+        if (presence == 1) {
+            uint8_t rh1 = DHT11_Read();
+            uint8_t rh2 = DHT11_Read();
+            uint8_t t1 = DHT11_Read();
+            uint8_t t2 = DHT11_Read();
+            uint8_t checksum = DHT11_Read();
+            
+            // Verify checksum before updating global variables
+            if (checksum == (rh1 + rh2 + t1 + t2)) {
+                dht11_data.temp_byte1 = t1;
+                dht11_data.temp_byte2 = t2;
+                dht11_data.rh_byte1 = rh1;
+                dht11_data.rh_byte2 = rh2;
+                dht11_data.valid = 1;
+                
+                // Print the reading
+
+                //convert t1 (integer) and t2 (decimal) to a fahrenheit value
+                float temp = (t1 + (t2 / 10.0)) * 9 / 5 + 32;
+                //split the float into integer and decimal parts
+                int temp_int = (int)temp;
+                int temp_dec = (int)((temp - temp_int) * 10);
+
+                
+
+                char temp_str[20];
+                snprintf(temp_str, sizeof(temp_str), "%d.%d f", temp_int, temp_dec);
+                print(temp_str);
+            } else {
+                print("Checksum Error\n");
+            }
+        } else {
+            print("Sensor Error\n");
+        }
+    }
+}
 //===========================================================================
 // Main function
 //===========================================================================
@@ -574,6 +660,7 @@ int main(void) {
     // GPIO enable
     enable_ports();
     // setup keyboard
+    init_tim6();
     init_tim7();
 
 
@@ -602,29 +689,23 @@ int main(void) {
     char tstr[20] = {0};
 
     while(1) {
-        DHT11_Start();
-        print("1");
-        Presence = DHT11_Check_Response();
-        print("2");
-        if (Presence == 1) {
-            Rh_byte1 = DHT11_Read();
-            print("3");
-            Rh_byte2 = DHT11_Read();
-            print("4");
-            Temp_byte1 = DHT11_Read();
-            print("5");
-            Temp_byte2 = DHT11_Read();
-            print("6");
-            Checksum = DHT11_Read();
-            print("7");
+        // DHT11_Start();
+        // Presence = DHT11_Check_Response();
+        // if (Presence == 1) {
+        //     Rh_byte1 = DHT11_Read();
+        //     Rh_byte2 = DHT11_Read();
+        //     Temp_byte1 = DHT11_Read();
+        //     Temp_byte2 = DHT11_Read();
+        //     Checksum = DHT11_Read();
 
-            snprintf(tstr, sizeof(tstr), "%d.%d C", (int)Temp_byte1, (int)Temp_byte2);
-            // print(tstr);
-        } else {
-            print("oooooo");
-        }
+        //     snprintf(tstr, sizeof(tstr), "%d.%d C", (int)Temp_byte1, (int)Temp_byte2);
+        //     print(tstr);
+        // } else {
+        //     print("oooooo");
+        // }
 
-        nano_wait(200000000); // Wait for 200ms before reading again
+        // nano_wait(2000000000); // Wait for 200ms before reading again
+        nano_wait(10000000); // Small delay to prevent CPU hogging
     }
 
 
