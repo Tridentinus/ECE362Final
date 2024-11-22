@@ -12,6 +12,7 @@
 // Fill out your username, otherwise your completion code will have the 
 // wrong username!
 const char* username = "seaman7";
+volatile float current_temp;
 
 # define DHT11_PORT GPIOA
 /*******************************************************************************/ 
@@ -39,6 +40,46 @@ void enable_ports(void) {
     GPIOC->PUPDR |= 0x55;
 }
 
+void setup_tim3(void) {
+    // Enable clock for GPIOC
+    RCC->AHBENR |= RCC_AHBENR_GPIOCEN;
+
+    // Enable clock for TIM3
+    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
+
+    // Set PC6, PC7, PC8, PC9 to alternate function mode
+    GPIOC->MODER &= ~0xFF000; // Clear mode bits for PC6-PC9
+    GPIOC->MODER |= 0xAA000;  // Set mode bits to alternate function
+
+    GPIOC->AFR[0] &= ~0xFF000000;
+    GPIOC->AFR[0] &= ~0x000000FF;
+
+
+
+    // Set TIM3 prescaler to divide by 48000 (48MHz / 48000 = 1kHz)
+    TIM3->PSC = 4799;
+
+    // Set TIM3 auto-reload register to 999 (1kHz / 1000 = 1Hz)
+    TIM3->ARR = 3;
+
+    // Set TIM3 CCMR1 and CCMR2 to PWM mode 1
+    TIM3->CCMR1 |= TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2;
+    TIM3->CCMR1 |= TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2;
+    TIM3->CCMR2 |= TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2;
+    TIM3->CCMR2 |= TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2;
+
+    // Enable the four outputs
+    TIM3->CCER |= TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC4E;
+
+    // Set TIM3 CCR1, CCR2, CCR3, CCR4
+    TIM3->CCR1 = 0;
+    TIM3->CCR2 = 10;
+    TIM3->CCR3 = 100;
+    TIM3->CCR4 = 100;
+
+    // Enable Timer 3
+    TIM3->CR1 |= TIM_CR1_CEN;
+}
 
 uint8_t col; // the column being scanned
 
@@ -148,6 +189,36 @@ uint8_t DHT11_Start (void) {
 
     //wait 18ms
     nano_wait(18000000);
+
+    //configure pin as input for PA7
+    DHT11_PORT->MODER &= ~(3 << (6 * 2));
+
+}
+
+uint8_t DHT22_Start (void) {
+    //turn on GPIOA
+    RCC->AHBENR |= RCC_AHBENR_GPIOAEN;
+
+    //set the mode to output for PA7
+    DHT11_PORT->MODER &= ~(3 << (6 * 2));
+    DHT11_PORT->MODER |= (1 << (6 * 2));
+
+    //set the output type to open drain for PA7
+    DHT11_PORT->OTYPER |= (1 << 6);
+
+    //clear pupdr for PA7
+    DHT11_PORT->PUPDR &= ~(3 << (6 * 2));
+
+    //set PA7 low 
+    DHT11_PORT->BRR = (1 << 6);
+
+    //wait 18ms
+    nano_wait(12000000);
+
+    //set pin high
+    DHT11_PORT->BSRR = (1 << 6);
+    //wait 20ms
+    nano_wait(20000);
 
     //configure pin as input for PA7
     DHT11_PORT->MODER &= ~(3 << (6 * 2));
@@ -485,8 +556,6 @@ int read_numeric_input(void) {
         display_user_input(temp, is_negative);
     }
 }
-
-// Global variables to store the latest readings
 volatile struct {
     uint8_t temp_byte1;
     uint8_t temp_byte2;
@@ -520,7 +589,7 @@ void init_tim6(void) {
     // Start the timer
     TIM6->CR1 |= TIM_CR1_CEN;
 }
-
+volatile uint8_t target = 0;
 // Timer 6 Interrupt Handler
 void TIM6_DAC_IRQHandler(void) {
     // Clear the update interrupt flag
@@ -528,14 +597,17 @@ void TIM6_DAC_IRQHandler(void) {
 
     // Increment counter
     timer_counter++;
-    
+
     // Only read every 4 ticks (2 seconds since we're at 2Hz)
     if (timer_counter >= 4) {
         timer_counter = 0;  // Reset counter
 
         // Start the reading sequence
-        DHT11_Start();
+        DHT22_Start();
         uint8_t presence = DHT11_Check_Response();
+        // char presence_str[20];
+        // snprintf(presence_str, sizeof(presence_str), "%d", presence);
+        // print(presence_str);
         
         if (presence == 1) {
             uint8_t rh1 = DHT11_Read();
@@ -545,34 +617,54 @@ void TIM6_DAC_IRQHandler(void) {
             uint8_t checksum = DHT11_Read();
             
             // Verify checksum before updating global variables
-            if (checksum == (rh1 + rh2 + t1 + t2)) {
+            // if (checksum == (rh1 + rh2 + t1 + t2)) {
                 dht11_data.temp_byte1 = t1;
                 dht11_data.temp_byte2 = t2;
                 dht11_data.rh_byte1 = rh1;
                 dht11_data.rh_byte2 = rh2;
                 dht11_data.valid = 1;
                 
-                // Print the reading
+                // Calculate temperature in celsius ()
 
-                //convert t1 (integer) and t2 (decimal) to a fahrenheit value
-                float temp = (t1 + (t2 / 10.0)) * 9 / 5 + 32;
-                //split the float into integer and decimal parts
-                int temp_int = (int)temp;
-                int temp_dec = (int)((temp - temp_int) * 10);
+                //t1 is the integer part of the temperature
+                //t2 is the decimal part of the temperature
+                //rh1 is the integer part of the humidity
+                //rh2 is the decimal part of the humidity
 
+                uint16_t temp = (t1 << 8) | t2;
+                uint16_t rh = (rh1 << 8) | rh2;
+                float temp_f = (float)temp / 10;
+                float rh_f = (float)rh / 10;
+
+                int temp_int = (int)temp_f;
+                int temp_dec = (int)((temp_f - temp_int) * 10);
+                int rh_int = (int)rh_f;
+                int rh_dec = (int)((rh_f - rh_int) * 10);
+
+                //convert to fahrenheit
+                temp_f = temp_f * 9 / 5 + 32;
+                current_temp = temp_f;
+
+                temp_int = (int)temp_f;
+                temp_dec = (int)((temp_f - temp_int) * 10);
                 
 
                 char temp_str[20];
-                snprintf(temp_str, sizeof(temp_str), "%d.%d f", temp_int, temp_dec);
+                snprintf(temp_str, sizeof(temp_str), "%d.%dF, %d.%d %%", temp_int, temp_dec, rh_int, rh_dec);
                 print(temp_str);
-            } else {
-                print("Checksum Error\n");
-            }
+
+
+                // msg[6] |= 0x80;
+            // } else {
+            //     print("Checksum Error\n");
+            // }
         } else {
             print("Sensor Error\n");
         }
     }
 }
+
+
 //===========================================================================
 // Main function
 //===========================================================================
@@ -582,31 +674,70 @@ uint8_t Rh_byte1 = 0;
 uint8_t Rh_byte2 = 0;
 uint8_t Temp_byte1 = 0;
 uint8_t Temp_byte2 = 0;
-
 int main(void) {
     internal_clock();
     enable_ports(); // GPIO enable for keypad
     init_tim7();    // Timer for keypad scanning
-    init_tim6();
+    // init_tim6();
     init_spi1();      // SPI initialization for OLED
     spi1_init_oled(); // Initialize OLED
+    // setup_tim3();
+    init_tim6();
+
+
+    // print("hello");
+    // LED array Bit Bang
+// #define BIT_BANG
+#if defined(BIT_BANG)
+    setup_bb();
+    drive_bb();
+#endif
+
+    // Direct SPI peripheral to drive LED display
+#define SPI_LEDS
+#if defined(SPI_LEDS)
+    init_spi2();
+    spi2_setup_dma();
+    spi2_enable_dma();
+    init_tim15();
+    // show_keys();
+#endif
+
+    // print("o");
+    // SPI OLED direct drive
+// char tstr[20] = {0};
+    // print("o       ");
+    char tstr[20] = {0};
+    prompt_temperature(); // Prompt user for input
+
+    int temp = read_numeric_input();
+
+    if (temp == -9999) { // Check for invalid input
+            display_invalid_input();
+    }
+    if (temp > 100 || temp < 0) {
+        display_invalid_input();
+    }
+    char buffer[16];
 
     while (1) {
-        prompt_temperature(); // Prompt user for input
-
-        int temp = read_numeric_input();
-
-        if (temp == -9999) { // Check for invalid input
-            display_invalid_input();
-        } else {
-            // Display the entered temperature
+        if (temp > current_temp) {
             clear_oled();
-            char buffer[16];
-            print(buffer, 16, "Set Temp: %d C", temp);
+            snprintf(buffer, 16, "Heating to %d F", temp);
             spi1_display1(buffer);
-            nano_wait(3000000000); // Wait 3 seconds before re-prompting
+        } else if (current_temp > temp) {
+            clear_oled();
+            snprintf(buffer, 16, "Cooling to %d F", temp);
+            spi1_display1(buffer);
+        } else {
+            clear_oled();
+            spi1_display1("Temperature reached!");
+            break;
         }
+        nano_wait(100000000); // Wait 100 ms before checking again
     }
+
+    spi1_display1("Temperature reached!");
 
     return 0;
 }
